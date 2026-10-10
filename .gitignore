@@ -1,0 +1,12 @@
+# 生成的描述文件（体积大，按需本地生成）
+profiles/
+ref/
+__pycache__/
+*.pyc
+
+# 字体始终从相邻字体仓库读取，不提交到服务器仓库。
+fonts/
+*.ttf
+*.otf
+*.woff
+*.woff2
