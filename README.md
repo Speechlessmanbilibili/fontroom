@@ -139,9 +139,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 如果单个包仍然偏大，也可以按字重两两配对生成小包，本项目 `profiles/` 目录下两种形式都保留着。
 
-**服务端必须支持 HTTP Range 请求。** Python 3.13 的 `SimpleHTTPRequestHandler` 没有实现 Range，`send_head` 里完全不看 `Range` 头，`copyfile` 也没有用上 `sendfile`。这会造成两个后果：客户端不知道能续传（缺 `Accept-Ranges`），而且中断之后只能从头再来。大文件在 Wi-Fi 上中断是常态，没有续传就基本下不完。
+**Python 3.13 的 `SimpleHTTPRequestHandler` 没有实现 Range。** `send_head` 里完全不看 `Range` 头，响应里也没有 `Accept-Ranges`，`copyfile` 则没有用上 `sendfile`。
 
-补齐的方式是覆盖 `send_head` 与 `copyfile`，手动解析 `Range` 头并返回 206：
+需要说明的是，**补齐 Range 并不能解决 Safari 下载中断的问题**。实测下来，iOS 上退出下载界面之后，Safari 不会保留临时数据，再次点击是从头开始，服务端的续传能力用不上。所以真正管用的措施是把包做小，而不是指望续传。
+
+Range 仍然值得补，原因在别处：它是 HTTP 的标准行为，缺了会让一些客户端与工具在探测分片下载时行为异常；而按规范返回 206 与 `Content-Range` 只是几十行代码的事，代价很低。补齐后的响应形态是：
 
 ```
 客户端: Range: bytes=500000000-500000999
@@ -150,7 +152,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         Accept-Ranges: bytes
 ```
 
-顺带一条排查经验：客户端中途断开时，Windows 抛的是 `ConnectionAbortedError`（WinError 10053），Linux 抛的是 `ConnectionResetError`（10054）或 `BrokenPipeError`。如果只捕获后两种，Windows 上每次断连都会往日志里打一整段堆栈。统一捕获 `OSError` 即可，这三者都是它的子类。
+**真正值得记的是异常类型。** 客户端中途断开时，Windows 抛的是 `ConnectionAbortedError`（WinError 10053），Linux 抛的是 `ConnectionResetError`（10054）或 `BrokenPipeError`。只捕获后两种的话，Windows 上每次断连都会往日志里打一整段堆栈，看起来像服务端出了故障。统一捕获 `OSError` 即可，这三者都是它的子类。
 
 ### 6. 调试方法论：黄金标准对照
 
