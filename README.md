@@ -139,22 +139,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 如果单个包仍然偏大，也可以按字重两两配对生成小包，本项目 `profiles/` 目录下两种形式都保留着。
 
-**Python 3.13 的 `SimpleHTTPRequestHandler` 没有实现 Range。** `send_head` 里完全不看 `Range` 头，响应里也没有 `Accept-Ranges`，`copyfile` 则没有用上 `sendfile`。
+另外一条无伤大雅但值得补齐的细节：Python 3.13 的 `SimpleHTTPRequestHandler` 没有实现 Range，`send_head` 里完全不看 `Range` 头，响应里也没有 `Accept-Ranges`，`copyfile` 则没有用上 `sendfile`。补它的理由是这属于 HTTP 的标准行为，缺了会让部分客户端在探测分片下载时行为异常，而按规范返回 206 与 `Content-Range` 只是几十行代码。需要说明的是，**它对 iOS 下载中断没有实际帮助**，原因见下一节。
 
-需要说明的是，**补齐 Range 并不能解决 Safari 下载中断的问题**。实测下来，iOS 上退出下载界面之后，Safari 不会保留临时数据，再次点击是从头开始，服务端的续传能力用不上。所以真正管用的措施是把包做小，而不是指望续传。
+### 6. Safari 下载大文件的限制
 
-Range 仍然值得补，原因在别处：它是 HTTP 的标准行为，缺了会让一些客户端与工具在探测分片下载时行为异常；而按规范返回 206 与 `Content-Range` 只是几十行代码的事，代价很低。补齐后的响应形态是：
+下载和安装是两层独立的问题，排查时必须分开确认。**上面那张表里所有失败的包，下载都是完整的**，进度条走到底，Safari 里能看到文件已完成，报错发生在随后进入安装界面的时候。所以体积问题只影响解析环节，不影响传输。
 
-```
-客户端: Range: bytes=500000000-500000999
-服务端: 206 Partial Content
-        Content-Range: bytes 500000000-500000999/847832329
-        Accept-Ranges: bytes
-```
+下载这一侧另有限制，是社区反复报告且本项目也遇到过的：
 
-**真正值得记的是异常类型。** 客户端中途断开时，Windows 抛的是 `ConnectionAbortedError`（WinError 10053），Linux 抛的是 `ConnectionResetError`（10054）或 `BrokenPipeError`。只捕获后两种的话，Windows 上每次断连都会往日志里打一整段堆栈，看起来像服务端出了故障。统一捕获 `OSError` 即可，这三者都是它的子类。
+- **超过 600 MB 的下载容易失败**，失败之后 Safari 不会续传，重新点击是从头开始；
+- **下载期间 Safari 必须保持在前台**。锁屏或切到其他应用，iOS 的内存管理会回收 Safari，下载就停在那里。
 
-### 6. 调试方法论：黄金标准对照
+本项目实测 161 MB、323 MB、485 MB 三档都能稳定下完，所以真正要控制的是**把描述文件体积压在上限以内**，而不是指望传输层的续传能力。
+
+顺带一条容易踩的坑：客户端中途断开时，Windows 抛的是 `ConnectionAbortedError`（WinError 10053），Linux 抛的是 `ConnectionResetError`（10054）或 `BrokenPipeError`。只捕获后两种的话，Windows 上每次断连都会往日志里打一整段堆栈，看起来像服务端出了故障，实际只是客户端不再接收数据。统一捕获 `OSError` 即可，这三者都是它的子类。
+
+**这一段是本项目走过弯路的地方，值得单独提醒。** 初期看到下载中途断开的日志，会顺势认为瓶颈在传输，于是去调发送缓冲区、关 Nagle、补 Range。这些改动本身没有害处，但都没有解决问题，因为真正卡住的是另外两件事：解析环节的体积上限，以及 Safari 自身对大文件下载的限制。
+
+排查这类问题时，应该先把三个环节分开确认，别混在一起：
+
+1. **传输是否完整**（进度条有没有走到底）
+2. **解析是否通过**（设置里能不能看到待安装项）
+3. **上限在哪里**（逐档加体积，找到第一档失败的）
+
+本项目当初就是把第一和第二件事混成了“大文件下不完”，白白绕了几轮。
+
+### 7. 调试方法论：黄金标准对照
 
 找不到头绪时，用一份“确定可用”的 profile 作为黄金标准逐步对照（本项目采用了 [keyman 的字体 profile](https://github.com/keymanapp/r.keymanweb.com)）：
 
