@@ -2,14 +2,11 @@
 """生成 iOS 字体描述文件（.mobileconfig）。
 
 用法：
-    python generate_profile.py                         # 默认：六个最新静态家族
-    python generate_profile.py --fonts <目录或ttf文件>...   # 任意字体来源
-    python generate_profile.py --out <输出目录>
+    python -X utf8 generate_profile.py
+    python -X utf8 generate_profile.py --fonts <字体目录或文件> --out <输出目录>
+    python -X utf8 generate_profile.py --pairs
 
-字体来源目录可用环境变量覆盖：
-    HANLINK_FONT_DIR、HANLINK_INTERROBANG_FONT_DIR、CJK_PUNCT_FONT_DIR、
-    CJK_PUNCT_INTERROBANG_FONT_DIR、INTERROBANG_BRIDGE_FONT_DIR、
-    TH_GROTESK_FONT_DIR
+默认读取相邻字体工程的静态输出目录，配置入口见 docs/usage.md。
 """
 import argparse
 import os
@@ -48,10 +45,128 @@ DEFAULT_FONT_DIRS = [
 PROFILE_ID = "org.silentperson.hanlink-sans-cjkpunct"
 
 
+# 方正字库：文件名是内部代号，需要映射成可读的中文名。
+FOUNDER_FONT_NAMES = {
+    "FZNBSJW": "方正新报宋简体",
+    "FZQingKBYSJF-B": "方正清刻本悦宋 简繁 B",
+    "FZQingKBYSJF-EL": "方正清刻本悦宋 简繁 EL",
+    "FZQingKBYSJF-L": "方正清刻本悦宋 简繁 L",
+    "FZQingKBYSJF-M": "方正清刻本悦宋 简繁 M",
+    "FZQingKBYSJF-R": "方正清刻本悦宋 简繁 R",
+    "FZQingKBYSJW-B": "方正清刻本悦宋 简 B",
+    "FZQingKBYSJW-EL": "方正清刻本悦宋 简 EL",
+    "FZQingKBYSJW-L": "方正清刻本悦宋 简 L",
+    "FZQingKBYSJW-M": "方正清刻本悦宋 简 M",
+    "FZQingKBYSJW-R": "方正清刻本悦宋 简 R",
+    "FZXSSB": "方正新書宋",
+    "FZXSSJW": "方正新书宋简体",
+    "FZXSSK": "方正新书宋_GBK",
+    "FZZHJW": "方正正黑简体",
+    "FZZHK": "方正正黑_GBK",
+}
+
+
+def _font_family(path: Path) -> str:
+    """读字体自带的 family 名（nameID 1）。读不到就返回空串。"""
+    try:
+        from fontTools.ttLib import TTFont
+        f = TTFont(str(path), lazy=True)
+        fam = ""
+        for rec in f["name"].names:
+            if rec.nameID == 1 and rec.platformID == 3 and rec.langID == 0x409:
+                fam = rec.toUnicode()
+                break
+        f.close()
+        return fam
+    except Exception:
+        return ""
+
+
+# 思源宋体：文件名形如 SourceHanSerifSC-Medium.otf，
+# 前缀区分语言版本，中缀是字重。顺序敏感，长的要排前面。
+SOURCE_HAN_PREFIXES = [
+    ("SourceHanSerifSC", "简"),
+    ("SourceHanSerifTC", "繁"),
+    ("SourceHanSerifHC", "港"),
+    ("SourceHanSerifK", "韩"),
+    ("SourceHanSerif", "日"),
+]
+
+
+def _source_han_name(stem: str):
+    """解析思源宋体的文件名，返回显示名；不是它则返回 None。"""
+    for prefix, lang in SOURCE_HAN_PREFIXES:
+        if stem.startswith(prefix + "-"):
+            style = stem[len(prefix) + 1:]
+            return "思源宋体%s %s" % (lang, style)
+    return None
+
+
+# Source Serif 4：文件名形如 SourceSerif4-Caption-BlackItalic.ttf，
+# 第一段是光学尺寸档位，第二段是字重。档位顺序敏感，长的排前面。
+SOURCE_SERIF_OPTICAL = {
+    "Text": "Text",
+    "Caption": "Caption",
+    "SmText": "SmText",
+    "Subhead": "Subhead",
+    "Display": "Display",
+}
+SOURCE_SERIF_STYLES = (
+    ("BoldItalic", "Bold Italic"),
+    ("ExtraLightItalic", "ExtraLight Italic"),
+    ("SemiboldItalic", "Semibold Italic"),
+    ("LightItalic", "Light Italic"),
+    ("BlackItalic", "Black Italic"),
+    ("Regular", "Regular"),
+    ("Italic", "Italic"),
+    ("Bold", "Bold"),
+    ("ExtraLight", "ExtraLight"),
+    ("Semibold", "Semibold"),
+    ("Light", "Light"),
+    ("Black", "Black"),
+)
+
+
+def _source_serif_name(stem: str):
+    """解析 Source Serif 4 的文件名，返回显示名；不是它则返回 None。
+
+    命名沿用官方规则：默认档是 SourceSerif4-Regular.ttf，其余档位带档位名，
+    例如 SourceSerif4Caption-BoldItalic.ttf。
+    """
+    if not stem.startswith("SourceSerif4"):
+        return None
+    rest = stem[len("SourceSerif4"):]
+    opt = ""
+    for cand in ("Caption", "SmText", "Subhead", "Display"):
+        if rest.startswith(cand + "-"):
+            opt = cand
+            rest = rest[len(cand):]
+            break
+    if not rest.startswith("-"):
+        return None
+    style = rest[1:]
+    for key, label in SOURCE_SERIF_STYLES:
+        if style == key:
+            prefix = ("Source Serif 4 " + opt) if opt else "Source Serif 4"
+            return "%s %s" % (prefix, label)
+    return None
 
 
 def display_name(path: Path) -> str:
     name = path.stem
+    han = _source_han_name(name)
+    if han:
+        return han
+    serif = _source_serif_name(name)
+    if serif:
+        return serif
+    if name.startswith("Charis-"):
+        return "Charis " + name[len("Charis-"):].replace("Italic", " Italic").strip()
+    if name in FOUNDER_FONT_NAMES:
+        return FOUNDER_FONT_NAMES[name]
+    for stem, display in FOUNDER_FONT_NAMES.items():
+        if stem.lower() == name.lower():
+            return display
     if name.startswith("HanlinkSansInterrobang"):
         family, style = "Hanlink Sans ?!", name[len("HanlinkSansInterrobang-"):]
     elif name.startswith("CJKPunctBridgeInterrobang"):
@@ -70,21 +185,19 @@ def display_name(path: Path) -> str:
 
 
 def discover_fonts(dirs=None) -> list:
-    """扫描字体目录，返回 [{path, name, size}]，按文件名排序。"""
+    """扫描独立 TTF/OTF 文件，按文件名排序；后列来源覆盖同名文件。"""
     dirs = dirs if dirs is not None else DEFAULT_FONT_DIRS
     by_name = {}
     for d in dirs:
         d = Path(d)
         if d.is_dir():
-            candidates = sorted(d.glob("*.ttf"))
-        elif d.is_file() and d.suffix == ".ttf":
+            candidates = sorted(p for p in d.iterdir() if p.is_file() and p.suffix.lower() in (".ttf", ".otf"))
+        elif d.is_file() and d.suffix.lower() in (".ttf", ".otf"):
             candidates = [d]
         else:
             candidates = []
         for path in candidates:
-            # PayloadIdentifier is derived from the filename stem, so duplicate
-            # filenames must resolve to one source. Later, dedicated directories
-            # intentionally override earlier compatibility/build directories.
+            # 描述文件以文件名生成标识；专用来源优先于前面的兼容目录。
             by_name[path.name] = path
     if not by_name:
         raise SystemExit(f"未找到字体：{dirs}")
@@ -106,13 +219,10 @@ def make_profile(
             "PayloadIdentifier": f"{profile_id}.font.{path.stem}",
             "PayloadUUID": str(uuid.uuid4()),
             "PayloadDisplayName": display_name(path),
-            # Name 是 com.apple.font 的必需键（字体文件名），缺失会被 iOS
-            # 判定「包含无效字体」（参考 Apple 文档示例与 keyman 实测 profile）。
+            # Name 是安装前显示的名称，系统安装后使用字体的内部名称。
             "Name": path.name,
             "PayloadDescription": "Configures Font settings",
-            # 必须传原始字体字节！plistlib 序列化时会自行 base64 编码；
-            # 若先 b64encode 一次再传入，会形成双重 base64，iOS 解码后
-            # 拿到的是 base64 文本而非字体数据，直接报「包含无效字体」。
+            # Font 保存原始字体字节，由 plistlib 完成序列化。
             "Font": path.read_bytes(),
         })
     profile = {
@@ -133,18 +243,17 @@ def make_profile(
 
 def main() -> None:
     ap = argparse.ArgumentParser(
-        description="生成 iOS 字体描述文件",
+        description="字房 / Fontroom：生成 iOS 字体描述文件",
         epilog="示例：\n"
-               "  python generate_profile.py                                   # 默认：六个最新静态家族\n"
-               "  python generate_profile.py --fonts C:/fonts /x/My.ttf        # 指定目录或文件\n"
-               "  python generate_profile.py --filter Italic                   # 只要斜体\n"
-               "  python generate_profile.py --filter Regular --filter Bold    # 多个过滤（OR）\n"
-               "  python generate_profile.py --name \"我的字体\" --out build/out   # 自定义名与输出目录",
+               "  python -X utf8 generate_profile.py                                   # 默认：六个静态家族\n"
+               "  python -X utf8 generate_profile.py --fonts C:/fonts C:/My.otf         # 指定目录或文件\n"
+               "  python -X utf8 generate_profile.py --filter Italic                    # 筛选斜体\n"
+               "  python -X utf8 generate_profile.py --filter Regular --filter Bold     # 多个过滤按或匹配\n",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument("--fonts", nargs="+", help="字体目录或 .ttf 文件（默认六个静态字体目录）")
+    ap.add_argument("--fonts", nargs="+", help="字体目录或独立 .ttf/.otf 文件（默认六个静态字体目录）")
     ap.add_argument("--filter", action="append", default=[], help="按文件名子串过滤（可多次，OR 关系）")
-    ap.add_argument("--name", default=None, help="全量包的显示名（默认“全部 N 个字体”）")
+    ap.add_argument("--name", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--out", type=Path, default=OUT_DIR, help="输出目录")
     ap.add_argument("--pairs", action="store_true", help="额外生成同字重的正体 + 斜体配对包")
     args = ap.parse_args()

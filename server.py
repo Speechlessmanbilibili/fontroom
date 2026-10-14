@@ -11,6 +11,8 @@
 import http.server
 import json
 import os
+import shutil
+import socket
 import socketserver
 import urllib.parse
 from datetime import datetime
@@ -31,8 +33,25 @@ DEFAULT_PORT_CANDIDATES = [8765, 8788, 9000, 9700, 12345]
 
 
 def get_server_font_dirs() -> list[Path]:
-    """汇总服务器可供动态打包与勾选的字体来源目录。"""
-    return list(DEFAULT_FONT_DIRS)
+    """汇总预设家族和自备字体的来源目录。"""
+    dirs = list(DEFAULT_FONT_DIRS)
+    sources = [
+        ("CRIMSON_PRO_FONT_DIR", "CrimsonPro"),
+        ("SOURCE_SERIF_FONT_DIR", "SourceSerif4"),
+        ("SOURCE_HAN_SERIF_FONT_DIR", "SourceHanSerif"),
+        ("CHARIS_FONT_DIR", "Charis"),
+    ]
+    for variable, folder in sources:
+        path = Path(os.environ.get(variable, os.path.join(ROOT, "fonts", folder)))
+        if path.is_dir():
+            dirs.append(path)
+    custom = os.environ.get("FONT_DIR")
+    if custom:
+        dirs.append(Path(custom))
+    path = Path(os.environ.get("FOUNDER_FONT_DIR", os.path.join(ROOT, "fonts", "founder")))
+    if path.is_dir():
+        dirs.append(path / "Font" if (path / "Font").is_dir() else path)
+    return dirs
 
 
 class Handler(http.server.SimpleHTTPRequestHandler):
@@ -41,8 +60,102 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         ".mobileconfig": "application/x-apple-aspen-config",
     }
 
+    # 发送缓冲区。默认值在局域网上偏小，大文件传输时容易喂不满带宽。
+    SEND_BUFFER = 1 << 20          # 1 MB
+    COPY_CHUNK = 1 << 18           # 256 KB
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT, **kwargs)
+
+    def setup(self):
+        super().setup()
+        try:
+            # 关掉 Nagle，避免小包攒批导致 iOS 端等数据
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF,
+                                       self.SEND_BUFFER)
+        except OSError:
+            pass
+
+    def copyfile(self, source, outputfile):
+        """用更大的块搬运文件，减少 sendall 调用次数。"""
+        try:
+            shutil.copyfileobj(source, outputfile, self.COPY_CHUNK)
+        except OSError:
+            # 客户端中途断开时会走到这里。Windows 上是 ConnectionAborted
+            # (10053)、Linux 上是 ConnectionReset (10054) 或 BrokenPipe，
+            # 三者都是 OSError 子类。这不是服务端故障，静默收场即可。
+            pass
+
+    def end_headers(self):
+        # 告诉客户端可以续传。iOS 下载大文件时会先看这个头再决定要不要用 Range。
+        if not any(header.lower().startswith(b"accept-ranges:") for header in getattr(self, "_headers_buffer", [])):
+            self.send_header("Accept-Ranges", "bytes")
+        super().end_headers()
+
+    def parse_range(self, size):
+        """解析 Range 头，返回 (start, end) 或 None。
+
+        Python 3.13 的 SimpleHTTPRequestHandler 不支持 Range，
+        而 iOS 下载大文件时会用续传来从中断处接着下。
+        """
+        hdr = self.headers.get("Range")
+        if not hdr or not hdr.startswith("bytes="):
+            return None
+        spec = hdr[len("bytes="):].split(",")[0].strip()
+        if "-" not in spec:
+            return None
+        a, b = spec.split("-", 1)
+        try:
+            if a == "":
+                # bytes=-N 表示最后 N 字节
+                n = int(b)
+                if n <= 0:
+                    return None
+                start = max(0, size - n)
+                end = size - 1
+            else:
+                start = int(a)
+                end = int(b) if b else size - 1
+        except ValueError:
+            return None
+        end = min(end, size - 1)
+        if start < 0 or start > end or start >= size:
+            return None
+        return start, end
+
+    def send_range(self, path):
+        """按 Range 只发一段，返回 True 表示已处理。"""
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return False
+        rng = self.parse_range(size)
+        if rng is None:
+            return False
+        start, end = rng
+        length = end - start + 1
+        ctype = self.extensions_map.get(path.suffix.lower(),
+                                        "application/octet-stream")
+        try:
+            with open(path, "rb") as f:
+                f.seek(start)
+                self.send_response(206)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, size))
+                self.send_header("Content-Length", str(length))
+                self.end_headers()
+                remain = length
+                while remain > 0:
+                    chunk = f.read(min(self.COPY_CHUNK, remain))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remain -= len(chunk)
+        except OSError:
+            pass
+        return True
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -55,6 +168,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if parsed.path == "/status.json":
             self._send_json(self._status())
             return
+        # 文件请求：带 Range 头时自己处理，支持断点续传
+        if self.headers.get("Range"):
+            target = Path(self.translate_path(parsed.path))
+            if target.is_file() and self.send_range(target):
+                return
         super().do_GET()
 
     def do_POST(self):
@@ -182,8 +300,8 @@ if __name__ == "__main__":
         )
 
     with httpd:
-        print(f"字体服务器已启动（局域网可访问）: http://0.0.0.0:{port}")
+        print(f"字房 / Fontroom 已启动（局域网可访问）: http://0.0.0.0:{port}")
         for ip in local_ips():
             print(f"  ->  http://{ip}:{port}/")
-        print("在 iPhone Safari 中打开上面的地址，点按「下载并安装」。", flush=True)
+        print("在 iPhone Safari 中打开上面的地址，选择字体家族或自选字体。", flush=True)
         httpd.serve_forever()

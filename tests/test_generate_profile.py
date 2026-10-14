@@ -7,6 +7,21 @@ from generate_profile import DEFAULT_FONT_DIRS, discover_fonts, display_name, ma
 
 
 class DiscoverFontsTests(unittest.TestCase):
+    def test_mixed_ttf_otf_extensions_and_profile_bytes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            ttf = root / "Example-Regular.TTF"
+            otf = root / "Example-Bold.OTF"
+            ttf.write_bytes(b"truetype")
+            otf.write_bytes(b"opentype")
+            (root / "Example.woff2").write_bytes(b"web")
+            fonts = discover_fonts([root])
+            self.assertEqual({path.name for path in fonts}, {ttf.name, otf.name})
+            self.assertEqual(discover_fonts([otf]), [otf])
+            payloads = plistlib.loads(make_profile("formats", fonts, "字体格式"))["PayloadContent"]
+            self.assertEqual({item["Name"]: item["Font"] for item in payloads},
+                             {ttf.name: b"truetype", otf.name: b"opentype"})
+
     def test_default_sources_are_six_static_families(self):
         self.assertEqual(len(DEFAULT_FONT_DIRS), 6)
         self.assertTrue(all(path.name == "static" for path in DEFAULT_FONT_DIRS))
@@ -28,6 +43,22 @@ class DiscoverFontsTests(unittest.TestCase):
         self.assertEqual(
             display_name(Path("InterrobangBridge-BoldItalic.ttf")),
             "Interrobang Bridge BoldItalic",
+        )
+        self.assertEqual(
+            display_name(Path("FZQingKBYSJW-R.TTF")),
+            "方正清刻本悦宋 简 R",
+        )
+        self.assertEqual(
+            display_name(Path("FZNBSJW.TTF")),
+            "方正新报宋简体",
+        )
+        self.assertEqual(
+            display_name(Path("FZXSSJW.TTF")),
+            "方正新书宋简体",
+        )
+        self.assertEqual(
+            display_name(Path("FZZHJW.TTF")),
+            "方正正黑简体",
         )
 
     def test_duplicate_filename_prefers_later_source_and_profile_ids_are_unique(self):
