@@ -94,7 +94,18 @@ SOURCE_HAN_PREFIXES = [
 
 
 def _source_han_name(stem: str):
-    """解析思源宋体的文件名，返回显示名；不是它则返回 None。"""
+    """解析思源宋体与思源黑体的文件名，返回地区和变体显示名。"""
+    if stem.startswith("SourceHanSans") and "-" in stem:
+        region, style = stem[len("SourceHanSans"):].split("-", 1)
+        variant = ""
+        if region.startswith("HW"):
+            region, variant = region[2:], " HW"
+        labels = {"SC": "简", "TC": "繁", "HC": "港", "K": "韩", "": "日",
+                  "CN": "简", "TW": "繁", "HK": "港", "KR": "韩", "JP": "日"}
+        if region in labels:
+            if region in {"CN", "TW", "HK", "KR", "JP"}:
+                variant += " 地区子集"
+            return f"思源黑体{labels[region]}{variant} {style}"
     for prefix, lang in SOURCE_HAN_PREFIXES:
         if stem.startswith(prefix + "-"):
             style = stem[len(prefix) + 1:]
@@ -160,6 +171,13 @@ def display_name(path: Path) -> str:
     serif = _source_serif_name(name)
     if serif:
         return serif
+    if name.startswith("SourceSans3-"):
+        style = name[len("SourceSans3-"):]
+        if style.endswith("It"):
+            style = style[:-2] + " Italic"
+        else:
+            style = style.replace("Italic", " Italic")
+        return "Source Sans 3 " + style.strip()
     if name.startswith("Charis-"):
         return "Charis " + name[len("Charis-"):].replace("Italic", " Italic").strip()
     if name in FOUNDER_FONT_NAMES:

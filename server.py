@@ -39,6 +39,8 @@ def get_server_font_dirs() -> list[Path]:
         ("CRIMSON_PRO_FONT_DIR", "CrimsonPro"),
         ("SOURCE_SERIF_FONT_DIR", "SourceSerif4"),
         ("SOURCE_HAN_SERIF_FONT_DIR", "SourceHanSerif"),
+        ("SOURCE_SANS_FONT_DIR", "SourceSans3"),
+        ("SOURCE_HAN_SANS_FONT_DIR", "SourceHanSans"),
         ("CHARIS_FONT_DIR", "Charis"),
     ]
     for variable, folder in sources:

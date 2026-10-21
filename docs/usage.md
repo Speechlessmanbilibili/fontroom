@@ -24,6 +24,8 @@ python -X utf8 server.py
 | `CRIMSON_PRO_FONT_DIR` | `fonts/CrimsonPro` |
 | `SOURCE_SERIF_FONT_DIR` | `fonts/SourceSerif4` |
 | `SOURCE_HAN_SERIF_FONT_DIR` | `fonts/SourceHanSerif` |
+| `SOURCE_SANS_FONT_DIR` | `fonts/SourceSans3` |
+| `SOURCE_HAN_SANS_FONT_DIR` | `fonts/SourceHanSans` |
 | `CHARIS_FONT_DIR` | `fonts/Charis` |
 | `FOUNDER_FONT_DIR` | `fonts/founder`，也识别其中的 `Font/` 子目录 |
 | `FONT_DIR` | 自备字体目录，按需设置 |
